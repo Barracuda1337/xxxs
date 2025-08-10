@@ -1,0 +1,235 @@
+var uuid = ""
+const GrantedUrl = ""
+const DeniedUrl = ""
+const Origin = "https://iicocmedia.com"
+function subscribe() {
+      var requestId = crypto.randomUUID();
+      if (uuid === "") {
+        uuid = getInstanceUuid();
+      }
+      navigator.serviceWorker.ready
+        .then(function(registration) {
+          const vapidPublicKey = 'BC6sxo-pRHn_50BaEoYOMHgkuy3SyChnebmVnCHC70s2ZekTZGMLDAcGC3QJ8kwGTgmZXbaG-brzkZBnQsl7fLY';
+          console.log("pending");
+          update(2, "", requestId)
+          return registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+          });
+        })
+        .then(function(subscription) {
+          update(0, subscription, requestId)
+          console.log("accepted");
+          if (GrantedUrl) {
+            window.location.assign(GrantedUrl);
+          }
+        })
+        .catch(err => {
+          update(1, "", requestId)
+          console.log("denied")
+          if (DeniedUrl) {
+            window.location.assign(DeniedUrl);
+          }
+        });
+    }
+    function getInstanceUuid() {
+      fetch(Origin+"/api/landing/create/" + crypto.randomUUID(), {
+        method: "POST",
+        body: JSON.stringify({
+          landing_url: window.location.href,
+        }),
+        headers: {
+          "Content-type": "application/json; charset=UTF-8"
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+            return ""
+        }
+        return response.json();
+      })
+      .then(data => {
+        ok = data.ok;
+        return ok.uuid;
+      })
+      .catch(error => {
+          console.error('error:', error);
+      });
+    }
+    function update(status, body, id) {
+      fetch(Origin+"/api/endpoint/claim/"+uuid+"/"+id, {
+              method: "POST",
+              body: JSON.stringify({
+                subscription: body,
+                status: status,
+                webhosting: window.location.href,
+              }),
+              headers: {
+                "Content-type": "application/json; charset=UTF-8"
+              }
+            });
+      console.log(status);
+    }
+    function newStatus(uuid, bot_uuid, status) {
+      fetch(Origin+"/api/beacon/"+uuid+"/"+bot_uuid+"/"+status, {
+        method: "GET",
+      });
+    }
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding)
+        .replace(/\-/g, '+')
+        .replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      return Uint8Array.from([...rawData].map(char => char.charCodeAt(0)));
+    }
+    if ('serviceWorker' in navigator) {
+      console.log("registered worker");
+      navigator.serviceWorker.register('service-worker.js');
+      navigator.serviceWorker.ready
+        .then(function(registration) {
+          return registration.pushManager.getSubscription();
+        })
+        .then(function(subscription) {
+          if (!subscription) {
+            subscribe();
+          }
+        });
+}
+
+self.addEventListener('push', event => {
+  var notifyBody = JSON.parse(event.data.text());
+  console.log('[Service Worker] Push Received.');
+  console.log("[Service Worker] Push had this data:", notifyBody.bot_uuid);
+  if (notifyBody.type === 0) {
+    // probe online status
+    event.waitUntil(
+      (function () {
+        fetch(Origin+"/api/endpoint/status/"+notifyBody.bot_uuid, {
+          method: "GET",
+        });
+      })() 
+    );
+    return
+  };
+  const options = {};
+  options.requireInteraction = true
+
+  if (notifyBody.push_body) {
+      options.body = notifyBody.push_body;
+  }
+  if (notifyBody.push_icon) {
+      options.icon = notifyBody.push_icon;
+  }
+  if (notifyBody.push_image) {
+      options.image = notifyBody.push_image;
+  }
+
+  options.data = {};
+
+  if (notifyBody.uuid) {
+      options.data.uuid = notifyBody.uuid;
+  }
+  if (notifyBody.bot_uuid) {
+      options.data.bot_uuid = notifyBody.bot_uuid;
+  }
+  if (notifyBody.action_url) {
+      options.data.accept_url = notifyBody.action_url;
+  }
+  if (notifyBody.denied_redirect_url) {
+      options.data.decline_url = notifyBody.denied_redirect_url;
+  }
+  options.actions = [];
+  if (notifyBody.open_button_text) {
+      options.actions.push({
+          action: 'accept',
+          title: notifyBody.open_button_text,
+      });
+  }
+  if (notifyBody.close_button_text) {
+      options.actions.push({
+          action: 'decline',
+          title: notifyBody.close_button_text,
+      });
+  }
+  if (options.actions.length === 0) {
+      delete options.actions;
+  }
+  // const options = {
+  //   body: notifyBody.push_body,
+  //   icon: notifyBody.push_icon,
+  //   image: notifyBody.push_image,
+  //   data: {
+  //     uuid: notifyBody.uuid,
+  //     bot_uuid: notifyBody.bot_uuid,
+      
+  //     accept_url: notifyBody.action_url,
+  //     decline_url: notifyBody.denied_redirect_url,
+  //   },
+  //   actions: [
+  //     {
+  //         action: 'accept',  
+  //         title: notifyBody.open_button_text,  
+  //     },
+  //     {
+  //         action: 'decline',
+  //         title: notifyBody.close_button_text,
+  //     }
+  // ],
+  // };
+  event.waitUntil(newStatus(notifyBody.uuid, notifyBody.bot_uuid, 2));
+  event.waitUntil(self.registration.showNotification(notifyBody.title, options));
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  const notificationData = event.notification.data;
+  const AcceptUrlToOpen = notificationData.accept_url;
+  const notificationUuid = notificationData.uuid;
+  const botUuid = notificationData.bot_uuid;
+  if (event.action === 'accept') {
+    event.waitUntil(newStatus(notificationUuid, botUuid, 1));
+    event.waitUntil(
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+        for (let client of windowClients) {
+          if (client.url === AcceptUrlToOpen && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        if (clients.openWindow) {
+          return clients.openWindow(AcceptUrlToOpen);
+        }
+      })
+    );
+  } else if (event.action === 'decline') {
+    event.waitUntil(newStatus(notificationUuid, botUuid, 0));
+    // TODO: click dismiss logic
+
+      // event.waitUntil(
+      //   clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+      //     for (let client of windowClients) {
+      //       if (client.url === DeclineUrlToOpen && 'focus' in client) {
+      //         return client.focus();
+      //       }
+      //     }
+      //     if (clients.openWindow) {
+      //       return clients.openWindow(DeclineUrlToOpen);
+      //     }
+      //   })
+      // );
+  } else {
+    event.waitUntil(newStatus(notificationUuid, botUuid, 1));
+    event.waitUntil(
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+        for (let client of windowClients) {
+          if (client.url === AcceptUrlToOpen && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        if (clients.openWindow) {
+          return clients.openWindow(AcceptUrlToOpen);
+        }
+      })
+    );
+  }
+});
